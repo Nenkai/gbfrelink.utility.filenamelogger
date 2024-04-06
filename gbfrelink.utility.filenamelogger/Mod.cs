@@ -1,12 +1,18 @@
 ﻿using System.Diagnostics;
 using System.Reflection;
+using System.Text;
+using System.IO.Hashing;
 using System.Runtime.InteropServices;
-using Reloaded.Mod.Interfaces;
+using System.Runtime.CompilerServices;
+
 using gbfrelink.utility.filenamelogger.Template;
 using gbfrelink.utility.filenamelogger.Configuration;
+
+using Reloaded.Mod.Interfaces;
 using Reloaded.Hooks.Definitions;
 using Reloaded.Memory.SigScan.ReloadedII.Interfaces;
 using IReloadedHooks = Reloaded.Hooks.ReloadedII.Interfaces.IReloadedHooks;
+using gbfrelink.utility.filenamelogger.Hooks;
 
 namespace gbfrelink.utility.filenamelogger;
 
@@ -47,12 +53,9 @@ public class Mod : ModBase // <= Do not Remove.
     private readonly IModConfig _modConfig;
 
     private static IStartupScanner? _startupScanner = null!;
-    private IHook<FileHashDelegate> _fileHashHook = null!;
-    private string _filesToAdd = "";
-    private HashSet<string> _existingLines = null!;
-    
-    private unsafe delegate ulong FileHashDelegate(byte* name, ulong length, ulong key);
-    
+
+    private unsafe delegate ulong XXHash32CustomDelegate(byte* name, ulong length);
+
     private static void SigScan(string pattern, string name, Action<nint> action)
     {
         var baseAddress = Process.GetCurrentProcess().MainModule!.BaseAddress;
@@ -66,12 +69,8 @@ public class Mod : ModBase // <= Do not Remove.
         });
     }
 
-    private void AppendIfNotExist(string val)
-    {
-        if (_existingLines.Contains(val) || _filesToAdd.Contains(val)) return;
-        _filesToAdd += val + "\n";
-    }
-    
+    public List<IHashLogger> _loggers;
+
     public Mod(ModContext context)
     {
         _modLoader = context.ModLoader;
@@ -80,71 +79,48 @@ public class Mod : ModBase // <= Do not Remove.
         _owner = context.Owner;
         _configuration = context.Configuration;
         _modConfig = context.ModConfig;
-        
+
+        _loggers = new()
+        {
+            new XXHash64Logger("FileHasher", "filelist.txt", "41 57 41 56 41 55 41 54 56 57 55 53 49 BB 4F EB D4 27 3D AE B2 C2"),
+            new XXHash32Logger("XXHash32Hasher", "hashlist.txt", "48 85 C9 0F 84 1B 02 00 00 4C 8D 04 11 B8 A4 54"),
+            new CRC32HashLogger("CRC32NameHasher", "crclist.txt", "56 57 53 48 81 EC ?? ?? ?? ?? 48 89 CB E8"),
+            new CRC32HashLogger("CRC32NameHasher2", "crclist2.txt", "B8 ?? ?? ?? ?? 48 83 FA ?? 0F 82 ?? ?? ?? ?? B8", toLower: false),
+            new ReflectionAttributeLogger("ReflectionAttributeLogger", "attributes.txt", "55 41 57 41 56 41 54 56 57 53 48 83 EC ?? 48 8D 6C 24 ?? 48 C7 45 ?? ?? ?? ?? ?? 49 89 CF 48 8D 0D")
+        };
+
         var startupScannerController = _modLoader.GetController<IStartupScanner>();
         if (startupScannerController == null || !startupScannerController.TryGetTarget(out _startupScanner))
         {
             return;
         }
 
-        var fileNames = File.Exists(Directory.GetParent(Assembly.GetExecutingAssembly().Location) + @"\filelist.txt")
-            ? File.ReadAllText(Directory.GetParent(Assembly.GetExecutingAssembly().Location) + @"\filelist.txt")
-            : "";
-        _existingLines = new HashSet<string>(fileNames.Split(new string[] { Environment.NewLine },
-            StringSplitOptions.RemoveEmptyEntries));
-
-        SigScan("41 57 41 56 41 55 41 54 56 57 55 53 49 BB 4F EB D4 27 3D AE B2 C2", "FileHasher", address =>
+        foreach (var logger in _loggers)
         {
-            unsafe
+            SigScan(logger.Pattern, "", address =>
             {
-                _fileHashHook = _hooks!.CreateHook<FileHashDelegate>(FileHash, address).Activate();
-            }
-        });
-        
-        var thread = new Thread(WriteFileNames);
+                _logger.WriteLine($"OK: {logger.FileName}");
+                logger.CreateHook(_hooks, address);
+            });
+        }
+
+        var thread = new Thread(WriteStuff);
         thread.Start();
     }
 
-    private void WriteFileNames()
+    private void WriteStuff()
     {
+        DirectoryInfo dir = Directory.GetParent(Assembly.GetExecutingAssembly().Location);
         while (true)
         {
-            foreach (var path in _filesToAdd.Split(new[] { Environment.NewLine },
-                         StringSplitOptions.RemoveEmptyEntries))
-            {
-                _existingLines.Add(path);
-            }
-            File.AppendAllText(Directory.GetParent(Assembly.GetExecutingAssembly().Location) + @"\filelist.txt", _filesToAdd);
-            _filesToAdd = "";
+            foreach (var logger in _loggers)
+                logger.Flush(dir.FullName);
+
             Thread.Sleep(TimeSpan.FromSeconds(1));
         }
     }
-    
-    private unsafe ulong FileHash(byte* name, ulong length, ulong key)
-    {
-        if (length > 260) return _fileHashHook.OriginalFunction(name, length, key);
-        try
-        {
-            var buffer = new byte[length];
-        
-            for (ulong i = 0; i < length; i++)
-            {
-                buffer[i] = name[i];
-            }
-        
-            var filename = buffer.BytesToString();
-            if (!filename.All(char.IsAscii)) return _fileHashHook.OriginalFunction(name, length, key);
-            AppendIfNotExist(filename);
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine(e);
-            return _fileHashHook.OriginalFunction(name, length, key);
-        }
-        
-        return _fileHashHook.OriginalFunction(name, length, key);
-    }
-    
+
+
     #region Standard Overrides
 
     public override void ConfigurationUpdated(Config configuration)
@@ -167,3 +143,4 @@ public class Mod : ModBase // <= Do not Remove.
 
     #endregion
 }
+

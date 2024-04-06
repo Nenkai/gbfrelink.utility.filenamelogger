@@ -16,4 +16,22 @@ public static class Extensions
             }
         }
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public unsafe static string PointerToString(byte* buffer)
+    {
+        var strBuf = new byte[0x200];
+
+        int i = 0;
+        while (true)
+        {
+            if (buffer[i] == 0)
+                break;
+
+            strBuf[i] = buffer[i];
+            i++;
+        }
+
+        return BytesToString(strBuf);
+    }
 }
